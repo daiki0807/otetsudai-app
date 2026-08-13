@@ -1,0 +1,15 @@
+# macOS
+.DS_Store
+**/.DS_Store
+
+# Claude Code（ローカル設定・作業領域）
+.claude/
+
+# Firebase（デプロイキャッシュ）
+.firebase/
+firebase-debug.log
+firestore-debug.log
+
+# 依存パッケージ・ビルド成果物
+node_modules/
+dist/
