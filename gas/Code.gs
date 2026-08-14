@@ -1,15 +1,6 @@
 // ============================================================
 //  おてつだいシール帳 — Google Apps Script バックエンド
 // ============================================================
-//
-//  【セットアップ手順】
-//  1. Google スプレッドシートを新規作成し、そのIDをここに貼る
-//  2. このファイルを Apps Script エディタに貼り付ける
-//  3. setupSpreadsheet() を一度だけ手動実行してシートを初期化する
-//  4. [デプロイ] > [新しいデプロイ] > 種類:ウェブアプリ
-//     アクセス:"全員" に設定してデプロイ
-//  5. 発行されたURLを index.html の GAS_URL に貼り付ける
-// ============================================================
 
 const SPREADSHEET_ID = '1tKJ18O1gBqIPImvcEBaTlj2Met9BojhRiSYy975JkI4';
 
@@ -37,14 +28,13 @@ function doGet(e) {
     }
 
     // --- Records シート ---
-    // 構造: records[dateKey][userId] = [taskId, ...]
     const recordsSheet = ss.getSheetByName('Records');
     const records = {};
     if (recordsSheet) {
       const rows = recordsSheet.getDataRange().getValues();
       for (let i = 1; i < rows.length; i++) {
         if (!rows[i][0]) continue;
-        const dateKey = String(rows[i][0]);
+        const dateKey = toDateKeyStr_(rows[i][0]);
         const userId  = String(rows[i][1]);
         const taskId  = String(rows[i][2]);
         if (!records[dateKey])         records[dateKey] = {};
@@ -58,15 +48,12 @@ function doGet(e) {
     return respond_({ tasks, records });
 
   } catch (err) {
-    return respond_({ error: err.message }, true);
+    return respond_({ error: err.message });
   }
 }
 
 // ------------------------------------------------------------
 //  POST — シールの追加 / 削除
-//  Body (JSON文字列):
-//    追加: { "action": "add",    "dateKey": "2026-04-05", "userId": "u1", "taskId": "t1" }
-//    削除: { "action": "remove", "dateKey": "2026-04-05", "userId": "u1", "taskId": "t1" }
 // ------------------------------------------------------------
 function doPost(e) {
   try {
@@ -82,16 +69,26 @@ function doPost(e) {
     if (!recordsSheet) throw new Error('Records シートが見つかりません');
 
     if (action === 'add') {
-      const timestamp = Utilities.formatDate(
-        new Date(), 'Asia/Tokyo', 'yyyy/MM/dd HH:mm:ss'
+      // 重複チェック
+      const existing = recordsSheet.getDataRange().getValues();
+      const isDuplicate = existing.slice(1).some(row =>
+        toDateKeyStr_(row[0]) === dateKey &&
+        String(row[1]) === userId &&
+        String(row[2]) === taskId
       );
-      recordsSheet.appendRow([dateKey, userId, taskId, timestamp]);
+      if (!isDuplicate) {
+        const timestamp = Utilities.formatDate(new Date(), 'Asia/Tokyo', 'yyyy/MM/dd HH:mm:ss');
+        const newRow = recordsSheet.getLastRow() + 1;
+        // ★ 列A〜Dをテキスト形式で書き込む（日付自動変換を防ぐ）
+        const range = recordsSheet.getRange(newRow, 1, 1, 4);
+        range.setNumberFormats([['@', '@', '@', '@']]);
+        range.setValues([[dateKey, userId, taskId, timestamp]]);
+      }
 
     } else if (action === 'remove') {
       const rows = recordsSheet.getDataRange().getValues();
-      // 後ろから検索して最初に一致した行を削除
       for (let i = rows.length - 1; i >= 1; i--) {
-        if (String(rows[i][0]) === dateKey &&
+        if (toDateKeyStr_(rows[i][0]) === dateKey &&
             String(rows[i][1]) === userId  &&
             String(rows[i][2]) === taskId) {
           recordsSheet.deleteRow(i + 1);
@@ -106,7 +103,7 @@ function doPost(e) {
     return respond_({ status: 'success' });
 
   } catch (err) {
-    return respond_({ status: 'error', message: err.message }, true);
+    return respond_({ status: 'error', message: err.message });
   }
 }
 
@@ -117,6 +114,41 @@ function respond_(obj) {
   return ContentService
     .createTextOutput(JSON.stringify(obj))
     .setMimeType(ContentService.MimeType.JSON);
+}
+
+// ------------------------------------------------------------
+//  ヘルパー: セル値を yyyy-MM-dd 文字列に変換
+//  （Sheetsが日付文字列をDate型に自動変換するため）
+// ------------------------------------------------------------
+function toDateKeyStr_(val) {
+  if (val instanceof Date) {
+    return Utilities.formatDate(val, 'Asia/Tokyo', 'yyyy-MM-dd');
+  }
+  return String(val);
+}
+
+// ------------------------------------------------------------
+//  既存データの dateKey を修復する（一度だけ手動実行）
+//  Records シートに日付型で保存されてしまったデータを
+//  テキスト形式の "yyyy-MM-dd" に書き直します
+// ------------------------------------------------------------
+function fixRecordsDates() {
+  const ss    = SpreadsheetApp.openById(SPREADSHEET_ID);
+  const sheet = ss.getSheetByName('Records');
+  if (!sheet) { Logger.log('Records シートが見つかりません'); return; }
+
+  const data = sheet.getDataRange().getValues();
+  // 列A全体をテキスト形式に変更
+  sheet.getRange('A:A').setNumberFormat('@');
+
+  let fixed = 0;
+  for (let i = 1; i < data.length; i++) {
+    if (!data[i][0]) continue;
+    const fixedDate = toDateKeyStr_(data[i][0]);
+    sheet.getRange(i + 1, 1).setValue(fixedDate);
+    fixed++;
+  }
+  Logger.log(`修正完了！ ${fixed} 件のdateKeyを修正しました。`);
 }
 
 // ------------------------------------------------------------
@@ -135,11 +167,12 @@ function setupSpreadsheet() {
   tasksSheet.appendRow(['t3', 'そうじきがけ',      80, '🧹']);
   tasksSheet.appendRow(['t4', 'せんたくたたみ',    60, '👕']);
 
-  // Records シート
+  // Records シート（列Aをテキスト形式に設定）
   let recordsSheet = ss.getSheetByName('Records');
   if (!recordsSheet) recordsSheet = ss.insertSheet('Records');
   recordsSheet.clearContents();
+  recordsSheet.getRange('A:A').setNumberFormat('@');
   recordsSheet.appendRow(['dateKey', 'userId', 'taskId', 'timestamp']);
 
-  Logger.log('セットアップ完了！Tasks と Records シートを作りました。');
+  Logger.log('セットアップ完了！');
 }
